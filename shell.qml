@@ -86,7 +86,7 @@ ShellRoot {
             live[key] = true
             if (!notified[key]) {
                 Quickshell.execDetached(["notify-send", "-a", "zhor", "-u", "critical",
-                    a.kind === "stall" ? "Система встала" : "Процесс залип",
+                    a.kind === "stall" ? "System stalled" : "Process stuck",
                     a.name + " (" + a.pid + ") — " + a.why])
             }
         }

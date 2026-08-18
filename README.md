@@ -1,71 +1,77 @@
 # zhor
 
-Кто жрёт эту картошку прямо сейчас. Виджет для [quickshell](https://quickshell.outfoxxed.me/) + Hyprland:
-пилюля в баре и список процессов по клику, с кнопками «придержать» и «убить».
+Who is eating this potato. A [quickshell](https://quickshell.outfoxxed.me/) + Hyprland
+widget: a pill in the bar, a process list on click, and buttons to hold or kill —
+plus a CLI that tells you what is stalling the machine.
+
+Named after Russian *жор* — "the gorging".
 
 ![zhor](docs/pill.png)
 
-## Зачем, если есть htop
+## Why, when htop exists
 
-Две вещи, которых htop не делает, пока ты в него не смотришь:
+Two things htop won't do while you are not staring at it:
 
-* **CPU считается дельтой между тиками.** `ps -o pcpu` показывает среднее за всю
-  жизнь процесса — панель, которая 12 часов ела полядра, выглядит там как 22 %,
-  хотя прямо сейчас ест 56 %. zhor показывает «сейчас», как `top`, но без `top`.
-* **Меряется PSI (`/proc/pressure`), а не только загрузка.** На слабом ноуте фриз
-  почти никогда не «кто-то упёрся в 100 % CPU» — это memory stall: своп забит,
-  ядро молотит реклейм, всё стоит. По CPU в этот момент виноватым выглядит не тот
-  процесс. При `memory full avg10` выше порога zhor ищет виновника **по памяти и
-  свопу**, а не по процессору.
+* **CPU is a tick-to-tick delta.** `ps -o pcpu` reports the average over a
+  process's whole lifetime, so a panel that has quietly eaten half a core for
+  twelve hours shows up as 22% while it is actually at 57% right now.
+* **PSI (`/proc/pressure`) is sampled, not just load.** On a weak laptop a freeze
+  is almost never "something hit 100% CPU" — it is a memory stall: swap is full,
+  the kernel is grinding through reclaim, everything waits. At that moment the
+  CPU ranking names the wrong process, because a stalling machine makes every
+  process look busy. When `memory full avg10` crosses the threshold, zhor looks
+  for the culprit **by footprint and swap** instead.
 
-Ничего не убивается автоматически. Осознанно: `rustc` на 250 % CPU — это
-правильный `rustc`, и автокиллер сожрал бы именно его.
+Nothing is ever killed automatically. Deliberately: `rustc` at 250% CPU is a
+correct `rustc`, and an autokiller would eat exactly that.
 
-## Установка
+## Install
 
 ```bash
 git clone https://github.com/Petyok/zhor ~/zhor && ~/zhor/install.sh
 ```
 
-Установщик идемпотентный: делает симлинк `~/.config/quickshell/zhor`, дописывает в
-`hyprland.conf` (с бэкапом) две строки и запускает виджет сразу, без релогина.
+The installer is idempotent: it symlinks `~/.config/quickshell/zhor` and
+`~/.local/bin/zhor`, appends two lines to `hyprland.conf` (with a backup), and
+starts the widget immediately — no relogin.
 
 ```
 exec-once = qs -n -p ~/.config/quickshell/zhor
 bind = SUPER SHIFT, ESCAPE, exec, qs -p ~/.config/quickshell/zhor ipc call popup toggle
 ```
 
-Удалить: `~/zhor/uninstall.sh` — снимает симлинк и вырезает свой блок из конфига.
+Removal: `~/zhor/uninstall.sh` drops the symlinks and cuts its own block back
+out of the config, byte for byte.
 
-Нужны `quickshell` и `python3`. Больше ничего — ни одной зависимости из pip.
+Requires `quickshell` and `python3`. Nothing else — not a single pip dependency.
 
-## Как пользоваться
+## The widget
 
-**Пилюля** показывает `PSI CPU% · свободная память · % занятого свопа`. Точка слева
-зелёная / жёлтая / красная по давлению, мигает при алерте. Клик — открыть список.
-Над fullscreen-окном прячется.
+**The pill** shows `PSI CPU% · free memory · swap used`. The dot on the left goes
+green / amber / red with pressure and blinks on an alert. Click to open the list.
+It hides itself over a fullscreen window.
 
-**Список** (`SUPER+SHIFT+ESC`, Esc или клик мимо — закрыть): топ по CPU и топ по RSS
-объединённые, плюс swap и `hot` — сколько секунд процесс держится за порогом.
-Клик по заголовку `CPU%` / `RSS` — сортировка.
+**The list** (`SUPER+SHIFT+ESC`; Esc or a click outside closes it) is the top by
+CPU and the top by RSS merged, plus swap and `hot` — how many seconds a process
+has been over the line. Clicking the `CPU%` / `RSS` headers sorts.
 
-| кнопка | что делает |
+| button | what it sends |
 |---|---|
-| `⏸` / `▶` | `SIGSTOP` / `SIGCONT` — заморозить процесс, не потеряв его состояние |
-| `↓19` | `renice -n 19` — уступить процессор всем остальным |
-| `✕` → `KILL` | первый клик `SIGTERM`, второй (в течение 5 с) `SIGKILL` |
+| `⏸` / `▶` | `SIGSTOP` / `SIGCONT` — freeze a process without losing its state |
+| `↓19` | `renice -n 19` — let everything else have the CPU first |
+| `✕` → `KILL` | first click `SIGTERM`, second one (within 5s) `SIGKILL` |
 
-Кнопки серые для чужих процессов: без root `kill` вернёт EPERM, а кнопка, которая
-молча ничего не делает, хуже неактивной.
+Buttons are greyed out for processes you don't own: without root `kill` returns
+EPERM, and a button that silently does nothing is worse than a disabled one.
 
-**Алерты** уходят в `notify-send`, по одному на процесс, пока состояние держится:
+**Alerts** go to `notify-send`, once per process while the condition holds:
 
-* `sustained` — процесс минуту подряд за порогом (≥ 90 % ядра или ≥ 25 % RAM);
-* `stall` — система реально встала по памяти (`memory full avg10` ≥ 10 %).
+* `sustained` — a process over the line for a minute (≥90% of a core or ≥25% RAM);
+* `stall` — the machine is genuinely blocked on memory (`memory full avg10` ≥ 10%).
 
-## CLI — для человека и для агента
+## CLI — for humans and for agents
 
-`install.sh` кладёт симлинк в `~/.local/bin/zhor`, так что просто:
+`install.sh` puts a symlink in `~/.local/bin/zhor`, so:
 
 ```console
 $ zhor
@@ -79,63 +85,68 @@ $ echo $?
 1
 ```
 
-| команда | что делает |
+| command | what it does |
 |---|---|
-| `zhor` | снимок + вердикт, **exit 1 если система под давлением** |
-| `zhor --json` | то же машинно-читаемо, плюс поле `verdict` и `recent` |
-| `zhor recent --since 120` | алерты, записанные демоном за последние 2 часа |
-| `zhor watch` | сам демон, поток JSON — его запускает виджет |
+| `zhor` | one-shot snapshot and verdict, **exit 1 if the box is under pressure** |
+| `zhor --json` | the same, machine-readable, with `verdict` and `recent` fields |
+| `zhor recent --since 120` | alerts the daemon logged over the last two hours |
+| `zhor watch` | the daemon itself, a JSON stream — this is what the widget runs |
 
-Три вещи, ради которых это сделано именно так:
+Three decisions that matter more than the code:
 
-* **Вердикт первой строкой.** Вопрос всегда один — «что тормозит», а не «дай цифр».
-  Порядок проверок неслучаен: memory stall выставляет занятыми вообще всех, поэтому
-  он бьёт CPU-версию. По CPU в такой момент виноватым выглядит не тот процесс.
-* **Exit code.** `zhor >/dev/null || собрать-диагностику` работает без парсинга.
-* **`recent`.** Фриз спрашивают уже после того, как он кончился, и снимок в этот
-  момент показывает спокойную машину. Демон и так крутится — он пишет алерты в
-  `~/.local/state/zhor/events.jsonl` (последние 2000, ротация сама).
+* **A verdict on the first line.** The question is always "what is slow", never
+  "give me numbers". The check order is not arbitrary: a memory stall outranks the
+  CPU verdict, because during a stall everything looks busy and the CPU ranking
+  points at the wrong process.
+* **An exit code.** `zhor >/dev/null || collect-diagnostics` needs no parsing.
+* **`recent`.** This is the part a snapshot cannot give you: a freeze gets asked
+  about after it has ended, and by then the machine looks calm. The daemon is
+  running anyway, so it writes alerts to `~/.local/state/zhor/events.jsonl`
+  (last 2000, self-rotating, deduplicated per process).
 
-Команд `kill`/`renice` в CLI **нет** намеренно: они уже есть в системе, а отчёт
-печатает pid. Дублировать `kill` в свою утилиту — лишний код и лишний способ
-промахнуться.
+There are deliberately **no `kill`/`renice` subcommands**: those already exist and
+the report prints pids. Wrapping `kill` would be extra code and one more way to
+hit the wrong thing.
 
-## Настройка
+## Configuration
 
-Пороги — флаги, посмотреть все: `zhor --help`.
+Thresholds are flags; `zhor --help` lists them all.
 
 ```bash
 zhor watch --interval 3 --cpu-hot 90 --rss-hot 25 --sustain 60 --stall-psi 10
 ```
 
-Правятся в `shell.qml` в строке `command:`. Там же вверху — позиция пилюли
-(`pillRight`, `pillTop`), палитра и пороги цветов.
+Edit them in the `command:` line in `shell.qml`. The same file has the pill's
+position (`pillRight`, `pillTop`), the palette and the colour thresholds at the top.
 
-Посмотреть сырой поток без виджета:
+To catch a *permanent* hog rather than a build spike, lower the bar and raise the
+window: `--cpu-hot 50 --sustain 300`.
+
+Raw stream without the widget:
 
 ```bash
 zhor watch | head -1 | python3 -m json.tool
 ```
 
-## Тесты
+## Tests
 
 ```bash
 ./test_zhor.py
 ```
 
-Голые `assert`, без фреймворков: арифметика дельты CPU, счётчик залипания,
-срабатывание алертов, отбор в шортлист.
+Bare `assert`s, no framework: CPU delta arithmetic, the stuck-process counter,
+alert triggering, shortlist selection, and verdict ordering.
 
-## Устройство
+## How it fits together
 
 ```
-zhor.py     собирает и решает: /proc + PSI, вердикт, журнал алертов, CLI
-shell.qml   рисует и передаёт клики; сам ничего не решает
+zhor.py     measures and decides: /proc + PSI, verdict, alert log, CLI
+shell.qml   draws and forwards clicks; decides nothing on its own
 ```
 
-Разделение неслучайное: всё, что можно посчитать неправильно, лежит в питоне,
-где это покрыто тестами и запускается без композитора.
+The split is deliberate: everything that can be computed wrongly lives in the
+Python, where it is covered by tests and runs without a compositor.
 
-## Лицензия
+## License
 
 MIT
