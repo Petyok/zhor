@@ -1,8 +1,19 @@
 # zhor
 
-Who is eating this potato. A [quickshell](https://quickshell.outfoxxed.me/) + Hyprland
-widget: a pill in the bar, a process list on click, and buttons to hold or kill —
-plus a CLI that tells you what is stalling the machine.
+**Who is eating this potato**
+
+[![vibecoded](https://img.shields.io/badge/vibecoded-100%25-ff69b4)](#model-credits)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+> ⚠️ This project is 100% vibe-coded slop — see [Model credits](#model-credits)
+> for who to blame; not a single line was written by a human. It has — and will
+> keep having — stupid bugs LLMs can't see. It sends signals to your processes;
+> the buttons do exactly what they say, which is the dangerous part. Use at your
+> own risk.
+
+A [quickshell](https://quickshell.outfoxxed.me/) + Hyprland widget: a pill in the
+bar, a process list on click, and buttons to hold or kill — plus a CLI that tells
+you what is stalling the machine.
 
 Named after Russian *жор* — "the gorging".
 
@@ -146,6 +157,18 @@ shell.qml   draws and forwards clicks; decides nothing on its own
 
 The split is deliberate: everything that can be computed wrongly lives in the
 Python, where it is covered by tests and runs without a compositor.
+
+## Model credits
+
+Built end-to-end in a single session by **Opus 5 (1M context)** — recon, design,
+the collector, the QML, the tests, the installer, this README, and the push.
+Every number in here was measured on the machine it was written on, not guessed:
+the CPU maths was cross-checked against `top` across 16 processes, and the
+uninstall round-trip was diffed byte for byte.
+
+The human contributed the idea, the name, the taste, the refusal to let it
+autokill anything, one screenshot, and the swearing — including catching that
+the repo description had gone out in the wrong language.
 
 ## License
 
