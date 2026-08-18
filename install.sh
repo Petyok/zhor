@@ -16,6 +16,11 @@ mkdir -p "$(dirname "$LINK")"
 ln -sfn "$SRC" "$LINK"
 echo "linked $LINK -> $SRC"
 
+mkdir -p "$HOME/.local/bin"
+ln -sfn "$SRC/zhor.py" "$HOME/.local/bin/zhor"
+echo "linked $HOME/.local/bin/zhor -> $SRC/zhor.py"
+case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "  note: $HOME/.local/bin is not on PATH" ;; esac
+
 if [[ -f $CONF ]]; then
     # Grep on the literal lines, so re-running never stacks duplicates. Anything
     # already present is left exactly as the user has it — including a keybind

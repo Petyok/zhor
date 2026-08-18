@@ -79,6 +79,44 @@ def test_shortlist_keeps_both_failure_modes():
     assert 99 in pids and 0 in pids and len(pids) == len(set(pids))
 
 
+def _snap(cpu10=0.0, mem_full=0.0, io_full=0.0, avail=4000, total=8000, swap=0, procs=None):
+    return {"psi": {"cpu10": cpu10, "mem_full10": mem_full, "io_full10": io_full},
+            "mem": {"avail_mb": avail, "total_mb": total, "swap_pct": swap},
+            "procs": procs or [{"pid": 1, "name": "hog", "cpu": 300.0, "rss_mb": 50, "swap_mb": 0},
+                               {"pid": 2, "name": "fat", "cpu": 0.0, "rss_mb": 900, "swap_mb": 400}],
+            "alerts": []}
+
+
+def test_verdict_is_quiet_when_nothing_is_wrong():
+    assert zhor.verdict(_snap(), CFG)[0] == 0
+
+
+def test_memory_stall_outranks_a_busy_cpu_and_blames_footprint():
+    # A 300% process is present in every case below; it must not be the answer
+    # when the machine is blocked on memory.
+    code, text = zhor.verdict(_snap(cpu10=90.0, mem_full=25.0), CFG)
+    assert code == 1 and "MEMORY STALL" in text and "fat(2)" in text and "hog" not in text
+
+
+def test_full_swap_with_little_free_is_flagged_before_it_stalls():
+    code, text = zhor.verdict(_snap(avail=1300, total=7835, swap=100), CFG)
+    assert code == 1 and "MEMORY TIGHT" in text
+    # ...but a full swap alone, with room to breathe, is not an emergency
+    assert zhor.verdict(_snap(avail=4000, total=7835, swap=100), CFG)[0] == 0
+
+
+def test_cpu_contention_names_the_busiest():
+    code, text = zhor.verdict(_snap(cpu10=75.0), CFG)
+    assert code == 1 and "CPU CONTENTION" in text and "hog(1)" in text
+
+
+def test_report_survives_an_empty_process_list():
+    # /proc can come back empty under extreme pressure; the reporter must not
+    # be the thing that crashes when the machine is at its worst.
+    code, text = zhor.report(_snap(procs=[]), CFG, [])
+    assert "VERDICT" in text and "TOP CPU" in text
+
+
 if __name__ == "__main__":
     ran = 0
     for name, fn in sorted(globals().items()):

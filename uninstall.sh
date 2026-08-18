@@ -6,6 +6,7 @@ CONF="$HOME/.config/hypr/hyprland.conf"
 
 qs kill -p "$LINK" >/dev/null 2>&1 && echo "stopped zhor" || echo "zhor not running"
 [[ -L $LINK ]] && rm "$LINK" && echo "removed $LINK"
+[[ -L $HOME/.local/bin/zhor ]] && rm "$HOME/.local/bin/zhor" && echo "removed $HOME/.local/bin/zhor"
 
 if [[ -f $CONF ]] && grep -q '^# --- zhor' "$CONF"; then
     cp "$CONF" "$CONF.zhor.bak"

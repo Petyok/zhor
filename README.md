@@ -63,12 +63,49 @@ bind = SUPER SHIFT, ESCAPE, exec, qs -p ~/.config/quickshell/zhor ipc call popup
 * `sustained` — процесс минуту подряд за порогом (≥ 90 % ядра или ≥ 25 % RAM);
 * `stall` — система реально встала по памяти (`memory full avg10` ≥ 10 %).
 
+## CLI — для человека и для агента
+
+`install.sh` кладёт симлинк в `~/.local/bin/zhor`, так что просто:
+
+```console
+$ zhor
+VERDICT  MEMORY TIGHT: 1391M free, swap 100% full, biggest footprint Telegram(1079) — a stall is one heavy tab away
+PSI      cpu 2.3%  mem 0.0%  io 0.0%   (avg10 = share of the last 10s spent stalled)
+MEM      1.4G free of 7.7G   swap 100% used
+TOP CPU  gjs(2232349) 59%  claude(1032098) 12%  claude(1588326) 5%
+TOP MEM  Telegram(1079) 344M+439Msw  claude(3239768) 483M+107Msw
+RECENT   3 alert(s) logged: 2x sustained gjs, 1x stall Telegram
+$ echo $?
+1
+```
+
+| команда | что делает |
+|---|---|
+| `zhor` | снимок + вердикт, **exit 1 если система под давлением** |
+| `zhor --json` | то же машинно-читаемо, плюс поле `verdict` и `recent` |
+| `zhor recent --since 120` | алерты, записанные демоном за последние 2 часа |
+| `zhor watch` | сам демон, поток JSON — его запускает виджет |
+
+Три вещи, ради которых это сделано именно так:
+
+* **Вердикт первой строкой.** Вопрос всегда один — «что тормозит», а не «дай цифр».
+  Порядок проверок неслучаен: memory stall выставляет занятыми вообще всех, поэтому
+  он бьёт CPU-версию. По CPU в такой момент виноватым выглядит не тот процесс.
+* **Exit code.** `zhor >/dev/null || собрать-диагностику` работает без парсинга.
+* **`recent`.** Фриз спрашивают уже после того, как он кончился, и снимок в этот
+  момент показывает спокойную машину. Демон и так крутится — он пишет алерты в
+  `~/.local/state/zhor/events.jsonl` (последние 2000, ротация сама).
+
+Команд `kill`/`renice` в CLI **нет** намеренно: они уже есть в системе, а отчёт
+печатает pid. Дублировать `kill` в свою утилиту — лишний код и лишний способ
+промахнуться.
+
 ## Настройка
 
-Пороги — флаги `zhor.py`, посмотреть все: `./zhor.py --help`.
+Пороги — флаги, посмотреть все: `zhor --help`.
 
 ```bash
-./zhor.py --interval 3 --cpu-hot 90 --rss-hot 25 --sustain 60 --stall-psi 10
+zhor watch --interval 3 --cpu-hot 90 --rss-hot 25 --sustain 60 --stall-psi 10
 ```
 
 Правятся в `shell.qml` в строке `command:`. Там же вверху — позиция пилюли
@@ -77,7 +114,7 @@ bind = SUPER SHIFT, ESCAPE, exec, qs -p ~/.config/quickshell/zhor ipc call popup
 Посмотреть сырой поток без виджета:
 
 ```bash
-./zhor.py --once | python3 -m json.tool
+zhor watch | head -1 | python3 -m json.tool
 ```
 
 ## Тесты
@@ -92,7 +129,7 @@ bind = SUPER SHIFT, ESCAPE, exec, qs -p ~/.config/quickshell/zhor ipc call popup
 ## Устройство
 
 ```
-zhor.py     собирает и решает: читает /proc, печатает одну JSON-строку за тик
+zhor.py     собирает и решает: /proc + PSI, вердикт, журнал алертов, CLI
 shell.qml   рисует и передаёт клики; сам ничего не решает
 ```
 

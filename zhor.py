@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""zhor collector — prints one JSON line per tick to stdout, kills nothing.
+"""zhor — what is eating this machine, in a form a human or an agent can read.
+
+    zhor              one-shot report + verdict (exit 1 if under pressure)
+    zhor --json       the same, machine-readable
+    zhor recent       alerts the daemon recorded while nobody was looking
+    zhor watch        the daemon: one JSON line per tick, for shell.qml
+
+Kills nothing and offers no kill command: `kill`/`renice` already exist and the
+report prints the pids. What does not already exist is the *judgement* — which
+of CPU, memory or io is actually stalling this box, and who to blame for it.
 
 Everything that decides *what* is wrong lives here; shell.qml only draws it and
 sends signals a human clicked. Two things this does that `ps`/`top -bn1` can't:
@@ -136,56 +145,205 @@ def shortlist(procs, n):
     return out
 
 
+# ── event log ──────────────────────────────────────────────────────────────
+# A freeze is reported minutes after it ends ("why did it hang earlier?"), and a
+# one-shot sample at that point shows a calm machine. The daemon is already
+# running, so it writes the alerts down as they happen.
+STATE = os.path.expanduser("~/.local/state/zhor")
+EVENTS = os.path.join(STATE, "events.jsonl")
+MAX_EVENTS = 2000
+
+
+def log_events(alerts, seen):
+    """Append alerts that are newly raised. `seen` is the set of (kind,pid) still
+    active, so a process flapping over the line doesn't write a line every tick."""
+    live = {(a["kind"], a["pid"]) for a in alerts}
+    fresh = [a for a in alerts if (a["kind"], a["pid"]) not in seen]
+    if fresh:
+        try:
+            os.makedirs(STATE, exist_ok=True)
+            with open(EVENTS, "a") as f:
+                for a in fresh:
+                    f.write(json.dumps({"t": time.time(), **a}, separators=(",", ":")) + "\n")
+            trim_events()
+        except OSError:
+            pass  # a monitor that dies because it can't write its log is worse than one that doesn't log
+    return live
+
+
+def trim_events():
+    with open(EVENTS) as f:
+        lines = f.readlines()
+    if len(lines) > MAX_EVENTS:
+        with open(EVENTS, "w") as f:
+            f.writelines(lines[-MAX_EVENTS:])
+
+
+def read_events(since_s):
+    cutoff = time.time() - since_s
+    out = []
+    try:
+        with open(EVENTS) as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if e.get("t", 0) >= cutoff:
+                    out.append(e)
+    except OSError:
+        pass
+    return out
+
+
+# ── sampling ───────────────────────────────────────────────────────────────
+def sample(interval, top, cfg, prev=None, hot=None, dt=None):
+    """One measurement window. CPU needs two reads, so this always costs `interval`
+    seconds unless the caller already holds a previous snapshot."""
+    if prev is None:
+        prev = read_procs()
+        time.sleep(interval)
+        dt = interval
+    cur = read_procs()
+    mem = read_meminfo()
+    psi = {k: read_pressure(k) for k in ("cpu", "memory", "io")}
+    procs = diff_procs(prev, cur, dt, mem["MemTotal"])
+    hot = bump_hot(hot or {}, procs, dt, cfg)
+    listed = shortlist(procs, top)
+    for p in listed:
+        p["swap_mb"] = read_swap_kb(p["pid"]) // 1024
+        p["hot_s"] = hot.get(p["pid"], 0.0)
+    swap_total = mem["SwapTotal"]
+    snap = {
+        "psi": {"cpu10": psi["cpu"]["some10"],
+                "mem_full10": psi["memory"]["full10"],
+                "io_full10": psi["io"]["full10"]},
+        "mem": {"avail_mb": mem["MemAvailable"] // 1024,
+                "total_mb": mem["MemTotal"] // 1024,
+                "swap_pct": round((swap_total - mem["SwapFree"]) / swap_total * 100)
+                            if swap_total else 0},
+        "procs": listed,
+        "alerts": make_alerts(listed, hot, psi, cfg),
+    }
+    return snap, cur, hot
+
+
+def verdict(snap, cfg):
+    """One line naming the bottleneck, because that is the whole question.
+    Order matters: memory stall makes everything else look busy, so it wins."""
+    psi, mem = snap["psi"], snap["mem"]
+    fat = max(snap["procs"], key=lambda p: p["rss_mb"] + p.get("swap_mb", 0), default=None)
+    busy = max(snap["procs"], key=lambda p: p["cpu"], default=None)
+    if psi["mem_full10"] >= cfg["stall_psi"]:
+        who = f" — biggest footprint: {fat['name']}({fat['pid']})" if fat else ""
+        return 1, f"MEMORY STALL: {psi['mem_full10']:.0f}% of time blocked on memory{who}"
+    if mem["swap_pct"] >= 90 and mem["avail_mb"] < mem["total_mb"] * 0.20:
+        who = f", biggest footprint {fat['name']}({fat['pid']})" if fat else ""
+        return 1, (f"MEMORY TIGHT: {mem['avail_mb']}M free, swap {mem['swap_pct']}% full{who}"
+                   f" — a stall is one heavy tab away")
+    if psi["io_full10"] >= cfg["stall_psi"]:
+        return 1, f"IO STALL: {psi['io_full10']:.0f}% of time blocked on disk"
+    if psi["cpu10"] >= 60:
+        who = f" — heaviest: {busy['name']}({busy['pid']}) at {busy['cpu']:.0f}%" if busy else ""
+        return 1, f"CPU CONTENTION: {psi['cpu10']:.0f}% of time waiting for a core{who}"
+    return 0, "OK: no pressure right now"
+
+
+def fmt_mb(mb):
+    return f"{mb / 1024:.1f}G" if mb >= 1024 else f"{mb}M"
+
+
+def report(snap, cfg, events):
+    v_code, v_text = verdict(snap, cfg)
+    psi, mem = snap["psi"], snap["mem"]
+    by_cpu = sorted(snap["procs"], key=lambda p: -p["cpu"])[:5]
+    by_mem = sorted(snap["procs"], key=lambda p: -(p["rss_mb"] + p.get("swap_mb", 0)))[:5]
+    out = [
+        f"VERDICT  {v_text}",
+        f"PSI      cpu {psi['cpu10']:.1f}%  mem {psi['mem_full10']:.1f}%  io {psi['io_full10']:.1f}%"
+        f"   (avg10 = share of the last 10s spent stalled)",
+        f"MEM      {fmt_mb(mem['avail_mb'])} free of {fmt_mb(mem['total_mb'])}"
+        f"   swap {mem['swap_pct']}% used",
+        "TOP CPU  " + "  ".join(f"{p['name']}({p['pid']}) {p['cpu']:.0f}%" for p in by_cpu),
+        "TOP MEM  " + "  ".join(
+            f"{p['name']}({p['pid']}) {fmt_mb(p['rss_mb'])}"
+            + (f"+{fmt_mb(p['swap_mb'])}sw" if p.get("swap_mb") else "") for p in by_mem),
+    ]
+    flagged = [p for p in snap["procs"] if p.get("hot_s", 0) >= cfg["sustain"]]
+    if flagged:
+        out.append("FLAGGED  " + "  ".join(
+            f"{p['name']}({p['pid']}) {int(p['hot_s'])}s over threshold" for p in flagged))
+    if events:
+        kinds = {}
+        for e in events:
+            kinds[(e["kind"], e.get("name", "?"))] = kinds.get((e["kind"], e.get("name", "?")), 0) + 1
+        out.append(f"RECENT   {len(events)} alert(s) logged: " + ", ".join(
+            f"{n}x {k} {who}" for (k, who), n in sorted(kinds.items(), key=lambda x: -x[1])))
+    else:
+        out.append("RECENT   nothing logged (daemon running? `zhor watch` feeds this)")
+    return v_code, "\n".join(out)
+
+
 # ── main loop ──────────────────────────────────────────────────────────────
 def main():
-    ap = argparse.ArgumentParser(description="zhor process/pressure collector")
-    ap.add_argument("--interval", type=float, default=3.0)
+    ap = argparse.ArgumentParser(
+        description="zhor — who is eating this machine",
+        epilog="exit 0 = no pressure, 1 = under pressure, so `zhor >/dev/null || ...` works")
+    ap.add_argument("cmd", nargs="?", default="report", choices=["report", "watch", "recent"],
+                    help="report (default): one-shot verdict; watch: JSON stream for the widget; "
+                         "recent: alerts logged earlier")
+    ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--interval", type=float, default=None,
+                    help="sampling window in seconds (default 1 for report, 3 for watch)")
+    ap.add_argument("--since", type=float, default=60, help="recent: minutes to look back")
     ap.add_argument("--top", type=int, default=10, help="top N by CPU and by RSS each")
     ap.add_argument("--cpu-hot", type=float, default=90.0, help="%% of one core")
     ap.add_argument("--rss-hot", type=float, default=25.0, help="%% of total RAM")
     ap.add_argument("--sustain", type=float, default=60.0, help="seconds before alerting")
     ap.add_argument("--stall-psi", type=float, default=10.0, help="memory full avg10")
-    ap.add_argument("--once", action="store_true", help="two ticks, print one line, exit")
     a = ap.parse_args()
     cfg = {"cpu_hot": a.cpu_hot, "rss_hot": a.rss_hot,
            "sustain": a.sustain, "stall_psi": a.stall_psi}
 
-    prev, hot, t_prev = read_procs(), {}, time.monotonic()
+    if a.cmd == "recent":
+        events = read_events(a.since * 60)
+        if a.json:
+            print(json.dumps(events, separators=(",", ":")))
+        elif not events:
+            print(f"no alerts in the last {a.since:.0f} min "
+                  f"(is the daemon running? `zhor watch` records them)")
+        else:
+            for e in events:
+                when = time.strftime("%H:%M:%S", time.localtime(e["t"]))
+                print(f"{when}  {e['kind']:<9} {e.get('name','?')}({e.get('pid','?')})  {e.get('why','')}")
+        return 0
+
+    if a.cmd == "report":
+        snap, _, _ = sample(a.interval or 1.0, a.top, cfg)
+        if a.json:
+            code, text = verdict(snap, cfg)
+            print(json.dumps({**snap, "verdict": text,
+                              "recent": read_events(a.since * 60)}, separators=(",", ":")))
+            return code
+        code, text = report(snap, cfg, read_events(a.since * 60))
+        print(text)
+        return code
+
+    # watch: the daemon behind shell.qml. Holds the previous snapshot so each tick
+    # costs one read, not two, and carries `hot` across ticks.
+    interval = a.interval or 3.0
+    prev, hot, seen, t_prev = read_procs(), {}, set(), time.monotonic()
     while True:
-        time.sleep(a.interval)
+        time.sleep(interval)
         now = time.monotonic()
         dt, t_prev = now - t_prev, now
-        cur = read_procs()
-        mem = read_meminfo()
-        psi = {k: read_pressure(k) for k in ("cpu", "memory", "io")}
-
-        procs = diff_procs(prev, cur, dt, mem["MemTotal"])
-        hot = bump_hot(hot, procs, dt, cfg)
-        listed = shortlist(procs, a.top)
-        for p in listed:
-            p["swap_mb"] = read_swap_kb(p["pid"]) // 1024
-            p["hot_s"] = hot.get(p["pid"], 0.0)
-
-        swap_total = mem["SwapTotal"]
-        print(json.dumps({
-            "psi": {"cpu10": psi["cpu"]["some10"],
-                    "mem_full10": psi["memory"]["full10"],
-                    "io_full10": psi["io"]["full10"]},
-            "mem": {"avail_mb": mem["MemAvailable"] // 1024,
-                    "total_mb": mem["MemTotal"] // 1024,
-                    "swap_pct": round((swap_total - mem["SwapFree"]) / swap_total * 100)
-                                if swap_total else 0},
-            "procs": listed,
-            "alerts": make_alerts(listed, hot, psi, cfg),
-        }, separators=(",", ":")), flush=True)
-
-        prev = cur
-        if a.once:
-            return
+        snap, prev, hot = sample(interval, a.top, cfg, prev=prev, hot=hot, dt=dt)
+        seen = log_events(snap["alerts"], seen)
+        print(json.dumps(snap, separators=(",", ":")), flush=True)
 
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main() or 0)
     except (KeyboardInterrupt, BrokenPipeError):
         sys.exit(0)

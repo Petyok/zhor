@@ -58,7 +58,7 @@ ShellRoot {
     // ── collector ───────────────────────────────────────────
     Process {
         id: collector
-        command: ["python3", Quickshell.shellPath("zhor.py")]
+        command: ["python3", Quickshell.shellPath("zhor.py"), "watch"]
         running: true
         stdout: SplitParser {
             onRead: data => {
