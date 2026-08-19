@@ -179,12 +179,17 @@ ShellRoot {
     }
 
     // ── click-away catcher ──────────────────────────────────
+    // Deliberately on Top, not Overlay, even though the popup it serves is on
+    // Overlay: within one layer Hyprland stacks by creation order, and this
+    // window is created after the popup — on the same layer it covers the popup
+    // and eats every click meant for a button. A whole layer down there is no
+    // order to get wrong.
     PanelWindow {
         visible: root.popupOpen
         anchors { top: true; bottom: true; left: true; right: true }
         color: "transparent"
         WlrLayershell.namespace: "zhor-catch"
-        WlrLayershell.layer: WlrLayer.Overlay
+        WlrLayershell.layer: WlrLayer.Top
         WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
         exclusionMode: ExclusionMode.Ignore
         MouseArea { anchors.fill: parent; onClicked: root.popupOpen = false }
