@@ -3,6 +3,7 @@
 **Who is eating this potato**
 
 [![vibecoded](https://img.shields.io/badge/vibecoded-100%25-ff69b4)](#model-credits)
+[![release](https://img.shields.io/github/v/release/Petyok/zhor)](https://github.com/Petyok/zhor/releases)
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 > ⚠️ This project is 100% vibe-coded slop — see [Model credits](#model-credits)
@@ -157,6 +158,10 @@ shell.qml   draws and forwards clicks; decides nothing on its own
 
 The split is deliberate: everything that can be computed wrongly lives in the
 Python, where it is covered by tests and runs without a compositor.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## Model credits
 
