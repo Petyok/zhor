@@ -2,6 +2,23 @@
 
 All notable changes to zhor are documented in this file.
 
+## [0.2.0] - 2026-09-07
+
+### Added
+- `Zhor.qml`: zhor as an embeddable component. Drop `Z.Zhor {}` into your own
+  Quickshell bar; `shell.qml` is now a thin standalone wrapper around it.
+  `fsActive` is an input (the host bar knows when a fullscreen window is up).
+
+### Changed
+- Click-away closes the list through `HyprlandFocusGrab` instead of a
+  full-screen transparent catcher window. The catcher lived on the `top` layer
+  and would also cover a host bar there, eating its clicks.
+- Fullscreen detection reads `HyprlandWorkspace.hasFullscreen` and refreshes via
+  the IPC socket instead of forking `hyprctl` on every window event.
+
+### Unchanged
+- Standalone usage, `install.sh`, the `popup` IPC target and the keybind.
+
 ## [0.1.0] - 2026-08-19
 
 First release.

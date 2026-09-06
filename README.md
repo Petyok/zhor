@@ -81,6 +81,21 @@ EPERM, and a button that silently does nothing is worse than a disabled one.
 * `sustained` — a process over the line for a minute (≥90% of a core or ≥25% RAM);
 * `stall` — the machine is genuinely blocked on memory (`memory full avg10` ≥ 10%).
 
+## Embedding in your own bar
+
+zhor is also a component. Quickshell only imports from inside the config
+directory, so put the checkout there (symlink or git submodule):
+
+```sh
+ln -s ~/zhor ~/.config/quickshell/mybar/zhor      # or: git submodule add https://github.com/Petyok/zhor zhor
+```
+```qml
+import "zhor" as Z
+Z.Zhor { fsActive: myFullscreenFlag }   // an Item; place it like any other pill
+```
+The component owns its process list window and closes it on click-away.
+`popupOpen` / `toggle()` are exposed for a keybind through your own IpcHandler.
+
 ## CLI — for humans and for agents
 
 `install.sh` puts a symlink in `~/.local/bin/zhor`, so:
