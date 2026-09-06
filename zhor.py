@@ -88,6 +88,154 @@ def read_swap_kb(pid):
     return 0
 
 
+# ── sysfs thermal readers ──────────────────────────────────────────────────
+def read_int(path):
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def read_str(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except (OSError, TypeError):
+        return None
+
+
+def _milli(path):
+    v = read_int(path)
+    return None if v is None else round(v / 1000)
+
+
+def discover_thermal(sysfs="/sys"):
+    """Resolve every sysfs source ONCE, by hwmon *name* (hwmonN numbers move between
+    boots). Returns the path table plus the state that read_thermal() carries
+    across ticks; `hot` cannot hold that state because bump_hot() rebuilds it."""
+    t = {"cpu_pkg": None, "cpu_cores": [], "cpu_crit": None, "cpu_zone": None,
+         "freq": [], "freq_max": None, "no_turbo": None,
+         "thr_count": None, "thr_ms": None, "fan": None, "fan_max": None,
+         "bat": None, "extra": [],
+         "prev_pkg": None, "prev_ms": None, "streak": 0}
+    hwmons = []
+    hwroot = os.path.join(sysfs, "class/hwmon")
+    try:
+        hwmons = [os.path.join(hwroot, d) for d in sorted(os.listdir(hwroot))]
+    except OSError:
+        pass
+    smcroot = os.path.join(sysfs, "devices/platform")
+    try:
+        hwmons += [os.path.join(smcroot, d) for d in sorted(os.listdir(smcroot)) if d.startswith("applesmc")]
+    except OSError:
+        pass
+
+    def temps(d):
+        out = []
+        try:
+            for f in sorted(os.listdir(d)):
+                if f.startswith("temp") and f.endswith("_input"):
+                    out.append((f[:-len("_input")], os.path.join(d, f)))
+        except OSError:
+            pass
+        return sorted(out, key=lambda x: int(x[0][4:]))
+
+    for d in hwmons:
+        name = read_str(os.path.join(d, "name"))
+        is_smc = os.path.basename(d).startswith("applesmc")
+        if name is None and not is_smc:
+            continue                                     # applesmc's bare hwmon dir, or garbage
+        if name in ("coretemp", "k10temp", "zenpower") and t["cpu_pkg"] is None:
+            ts = temps(d)
+            if ts:
+                t["cpu_pkg"] = ts[0][1]
+                t["cpu_cores"] = [p for _, p in ts[1:]]
+                for c in ("temp1_crit", "temp1_max"):
+                    if read_int(os.path.join(d, c)) is not None:
+                        t["cpu_crit"] = os.path.join(d, c); break
+            continue
+        if name == "BAT0" and t["bat"] is None:
+            t["bat"] = os.path.join(d, "temp1_input")
+            continue
+        for stem, path in temps(d):
+            label = read_str(os.path.join(d, stem + "_label")) or name or "smc"
+            t["extra"].append((label, path))
+        if t["fan"] is None:
+            for f in ("fan1_input", "fan2_input"):
+                if read_int(os.path.join(d, f)) is not None:
+                    t["fan"] = os.path.join(d, f)
+                    mx = os.path.join(d, f.replace("_input", "_max"))
+                    t["fan_max"] = mx if read_int(mx) is not None else None
+                    break
+
+    if t["cpu_pkg"] is None:                              # no coretemp-like hwmon: thermal_zone fallback
+        zroot = os.path.join(sysfs, "class/thermal")
+        try:
+            for z in sorted(os.listdir(zroot)):
+                if read_str(os.path.join(zroot, z, "type")) == "x86_pkg_temp":
+                    t["cpu_zone"] = os.path.join(zroot, z, "temp"); break
+        except OSError:
+            pass
+
+    cpuroot = os.path.join(sysfs, "devices/system/cpu")
+    try:
+        for c in sorted(os.listdir(cpuroot)):
+            if c.startswith("cpu") and c[3:].isdigit():
+                p = os.path.join(cpuroot, c, "cpufreq/scaling_cur_freq")
+                if read_int(p) is not None:
+                    t["freq"].append(p)
+    except OSError:
+        pass
+    for key, rel in (("freq_max", "cpu0/cpufreq/cpuinfo_max_freq"),
+                     ("no_turbo", "intel_pstate/no_turbo"),
+                     ("thr_count", "cpu0/thermal_throttle/package_throttle_count"),
+                     ("thr_ms", "cpu0/thermal_throttle/package_throttle_total_time_ms")):
+        p = os.path.join(cpuroot, rel)
+        if read_int(p) is not None:
+            t[key] = p
+    return t
+
+
+def read_thermal(therm):
+    """One tick of the thermal block. Frequency is the MAX over cores: idle cores
+    report their requested P-state (a flat 500000), which would drag an average
+    down and draw dips that never happened. `throttled` = the package throttle
+    counter moved since the previous tick; `streak` counts consecutive such ticks."""
+    t = therm
+    cpu_c = _milli(t["cpu_pkg"]) if t["cpu_pkg"] else _milli(t["cpu_zone"]) if t["cpu_zone"] else None
+    cores = [c for c in (_milli(p) for p in t["cpu_cores"]) if c is not None]
+    crit = _milli(t["cpu_crit"]) if t["cpu_crit"] else None
+    freqs = [f for f in (read_int(p) for p in t["freq"]) if f is not None]
+    freq_mhz = max(freqs) // 1000 if freqs else None
+    fmax = read_int(t["freq_max"]) if t["freq_max"] else None      # re-read: changes with no_turbo
+    freq_pct = round(max(freqs) / fmax * 100) if freqs and fmax else None
+    nt = read_int(t["no_turbo"]) if t["no_turbo"] else None
+    turbo = None if nt is None else (nt == 0)
+    pkg = read_int(t["thr_count"]) if t["thr_count"] else None
+    ms = read_int(t["thr_ms"]) if t["thr_ms"] else None
+    d_pkg = (pkg - t["prev_pkg"]) if pkg is not None and t["prev_pkg"] is not None else 0
+    d_ms = (ms - t["prev_ms"]) if ms is not None and t["prev_ms"] is not None else 0
+    d_pkg, d_ms = max(0, d_pkg), max(0, d_ms)
+    throttled = d_pkg > 0
+    t["streak"] = t["streak"] + 1 if throttled else 0
+    t["prev_pkg"], t["prev_ms"] = pkg, ms
+    extra = []
+    for label, path in t["extra"]:
+        c = _milli(path)
+        if c is not None and c > 0:
+            extra.append({"name": label, "c": c})
+    extra.sort(key=lambda e: -e["c"])
+    return {"cpu_c": cpu_c, "cores_c": cores, "crit_c": crit,
+            "freq_mhz": freq_mhz, "freq_pct": freq_pct, "turbo": turbo,
+            "throttle_pkg": pkg, "throttle_ms": ms, "d_pkg": d_pkg, "d_ms": d_ms,
+            "throttled": throttled,
+            "fan_rpm": read_int(t["fan"]) if t["fan"] else None,
+            "fan_max": read_int(t["fan_max"]) if t["fan_max"] else None,
+            "bat_c": _milli(t["bat"]) if t["bat"] else None,
+            "extra": extra}
+
+
 # ── pure logic (see test_zhor.py) ──────────────────────────────────────────
 def diff_procs(prev, cur, dt, mem_total_kb):
     """CPU% as percent of ONE core, the way top reports it: 247% == 2.5 cores busy."""

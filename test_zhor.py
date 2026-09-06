@@ -8,6 +8,74 @@ CALM = {"cpu": {"some10": 0.0, "full10": 0.0},
         "memory": {"some10": 0.0, "full10": 0.0},
         "io": {"some10": 0.0, "full10": 0.0}}
 
+import os, tempfile
+
+
+def _w(root, rel, value):
+    path = os.path.join(root, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(str(value) + "\n")
+
+
+def fake_sys():
+    """A /sys with everything the laptop has, plus the corner cases seen in review:
+    a hwmon without `name`, a hwmon input without a label, a negative SMC sensor,
+    idle cores reporting their requested P-state."""
+    root = tempfile.mkdtemp(prefix="zhor-sys-")
+    hw = "class/hwmon/"
+    _w(root, hw + "hwmon1/name", "coretemp")
+    _w(root, hw + "hwmon1/temp1_label", "Package id 0")
+    _w(root, hw + "hwmon1/temp1_input", 65000)
+    _w(root, hw + "hwmon1/temp1_crit", 105000)
+    _w(root, hw + "hwmon1/temp2_label", "Core 0")
+    _w(root, hw + "hwmon1/temp2_input", 65000)
+    _w(root, hw + "hwmon1/temp3_label", "Core 1")
+    _w(root, hw + "hwmon1/temp3_input", 64000)
+    _w(root, hw + "hwmon2/name", "pch_wildcat_point")
+    _w(root, hw + "hwmon2/temp1_input", 52000)          # no label → named after the hwmon
+    _w(root, hw + "hwmon3/name", "BAT0")
+    _w(root, hw + "hwmon3/temp1_input", 35000)
+    os.makedirs(os.path.join(root, hw + "hwmon4"))        # applesmc's hwmon: no name, no sensors
+    smc = "devices/platform/applesmc.768/"
+    _w(root, smc + "fan1_input", 1185)
+    _w(root, smc + "fan1_max", 6500)
+    _w(root, smc + "temp1_label", "TCXC")
+    _w(root, smc + "temp1_input", 52750)                  # not a multiple of 1000
+    _w(root, smc + "temp2_label", "TH0F")
+    _w(root, smc + "temp2_input", -43250)                 # garbage sensor
+    cpu = "devices/system/cpu/"
+    _w(root, cpu + "cpu0/cpufreq/scaling_cur_freq", 1774494)
+    _w(root, cpu + "cpu1/cpufreq/scaling_cur_freq", 500000)   # idle: requested P-state
+    _w(root, cpu + "cpu0/cpufreq/cpuinfo_max_freq", 1800000)
+    _w(root, cpu + "intel_pstate/no_turbo", 1)
+    _w(root, cpu + "cpu0/thermal_throttle/package_throttle_count", 863)
+    _w(root, cpu + "cpu0/thermal_throttle/package_throttle_total_time_ms", 3512)
+    return root
+
+
+def test_thermal_reads_the_laptop_layout():
+    root = fake_sys()
+    therm = zhor.discover_thermal(root)
+    t = zhor.read_thermal(therm)
+    assert t["cpu_c"] == 65 and t["cores_c"] == [65, 64] and t["crit_c"] == 105
+    assert t["freq_mhz"] == 1774 and t["freq_pct"] == 99      # max over cores, not the idle average
+    assert t["turbo"] is False
+    assert t["throttle_pkg"] == 863 and t["throttle_ms"] == 3512
+    assert t["d_pkg"] == 0 and t["throttled"] is False        # first tick: nothing to diff against
+    assert t["fan_rpm"] == 1185 and t["fan_max"] == 6500
+    assert t["bat_c"] == 35
+    names = [e["name"] for e in t["extra"]]
+    assert names == ["TCXC", "pch_wildcat_point"]             # sorted by temp; TH0F filtered; BAT0/coretemp not duplicated
+    assert t["extra"][0]["c"] == 53                            # 52750 rounds, not truncates
+
+
+def test_thermal_survives_an_empty_sys():
+    therm = zhor.discover_thermal(tempfile.mkdtemp(prefix="zhor-empty-"))
+    t = zhor.read_thermal(therm)
+    assert t["cpu_c"] is None and t["freq_mhz"] is None and t["fan_rpm"] is None
+    assert t["extra"] == [] and t["throttled"] is False
+
 
 def p(ticks, rss_kb=1024, uid=0, state="R", name="hog"):
     return {"name": name, "ticks": ticks, "rss_kb": rss_kb, "uid": uid, "state": state}
