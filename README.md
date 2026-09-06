@@ -81,6 +81,29 @@ EPERM, and a button that silently does nothing is worse than a disabled one.
 * `sustained` — a process over the line for a minute (≥90% of a core or ≥25% RAM);
 * `stall` — the machine is genuinely blocked on memory (`memory full avg10` ≥ 10%).
 
+## Thermal
+
+The pill shows the CPU package temperature; the popup adds a line (`cpu 65°  1.8 GHz
+(100%)  fan 1185  bat 35°  turbo off`) and a collapsible section with an hour of history
+for temperature, frequency and fan speed, plus every sensor the machine exposes.
+
+**Throttling is read from the kernel, not guessed from the temperature.**
+`/sys/devices/system/cpu/cpu0/thermal_throttle/package_throttle_count` increments on every
+PROCHOT interrupt — including external PROCHOT the embedded controller asserts for power
+reasons — while `package_throttle_total_time_ms` only accrues when the event started within
+10 °C of Tjmax. zhor alerts (`CPU throttling`) when the counter moved on two consecutive
+ticks (a single 4 ms blip is not an alert) or when the package is within 10 °C of its
+critical temperature; the alert text carries both deltas so you can tell heat from power.
+
+Frequency is the maximum over cores: `scaling_cur_freq` is measured (APERF/MPERF) for busy
+cores but reports the requested P-state for idle ones, so an average dips when nothing
+happened. With turbo enabled the base frequency reads as ~62 %.
+
+Everything comes from sysfs, no root, no `lm_sensors`. Sources are resolved once at start
+by hwmon *name* (`coretemp`/`k10temp`/`zenpower`, `BAT0`, `applesmc`); missing sources are
+simply absent. The fan is displayed, never controlled — on a MacBook that would mean root
+and a fight with `mbpfan`. The 4-letter SMC sensor codes are shown as-is.
+
 ## Embedding in your own bar
 
 zhor is also a component. Quickshell only imports from inside the config

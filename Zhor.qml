@@ -54,7 +54,57 @@ Item {
     property var  histFan: []          // rpm per tick
     function degColor(c) { return c >= badC ? cBad : c >= warnC ? cWarn : cText }
     function pushHist(arr, v) { arr.push(v === undefined ? null : v); if (arr.length > historyLen) arr.shift() }
-    onPopupOpenChanged: if (popupOpen && lastTick && lastTick.thermal) thermal = lastTick.thermal
+    onPopupOpenChanged: {
+        if (popupOpen && lastTick && lastTick.thermal) thermal = lastTick.thermal
+        if (popupOpen) Qt.callLater(root.repaintSparks)      // Canvas is only `available` once the window shows
+    }
+    onThermalOpenChanged: if (thermalOpen) Qt.callLater(root.repaintSparks)
+    function repaintSparks() { sparkT.repaint(); sparkF.repaint(); sparkFan.repaint() }
+
+    // A sparkline over one history array. Canvas does not repaint on its own when the
+    // array mutates in place, so the owner calls repaint() after each push; a Canvas in
+    // a hidden window never paints (available=false), hence repaint on popup open too.
+    component Spark: Canvas {
+        id: cv
+        property var series: []
+        property real lo: 0
+        property real hi: 100
+        property real mark: NaN          // horizontal guide line (warn threshold)
+        property string label: ""
+        property string current: ""
+        width: 240; height: 48
+        function repaint() { if (available) requestPaint() }
+        onPaint: {
+            var ctx = getContext("2d"), w = width, h = height, n = series.length
+            ctx.clearRect(0, 0, w, h)
+            ctx.fillStyle = root.cFaint; ctx.fillRect(0, h - 1, w, 1)
+            if (!isNaN(mark) && hi > lo) {
+                var ym = h - (mark - lo) / (hi - lo) * h
+                ctx.strokeStyle = root.cWarn; ctx.lineWidth = 1; ctx.setLineDash([3, 3])
+                ctx.beginPath(); ctx.moveTo(0, ym); ctx.lineTo(w, ym); ctx.stroke(); ctx.setLineDash([])
+            }
+            if (n < 2 || hi <= lo) return
+            // The x axis spans at least 60 points (3 min) so a young history is still
+            // readable, then compresses toward the full hour as points accumulate.
+            var span = Math.max(n, 60), step = w / (span - 1), x0 = w - (n - 1) * step
+            ctx.lineWidth = 1.5; ctx.strokeStyle = root.cAccent
+            ctx.fillStyle = Qt.rgba(root.cAccent.r, root.cAccent.g, root.cAccent.b, 0.15)
+            var pen = false, startX = 0, lastX = 0
+            for (var i = 0; i < n; i++) {
+                var v = series[i]
+                if (v === null || v === undefined) {
+                    if (pen) { ctx.stroke(); ctx.lineTo(lastX, h); ctx.lineTo(startX, h); ctx.closePath(); ctx.fill(); pen = false }
+                    continue
+                }
+                var x = x0 + i * step, y = h - Math.min(1, Math.max(0, (v - lo) / (hi - lo))) * (h - 4) - 2
+                if (!pen) { ctx.beginPath(); ctx.moveTo(x, y); pen = true; startX = x } else ctx.lineTo(x, y)
+                lastX = x
+            }
+            if (pen) { ctx.stroke(); ctx.lineTo(lastX, h); ctx.lineTo(startX, h); ctx.closePath(); ctx.fill() }
+        }
+        Text { x: 4; y: 2; text: cv.label; color: root.cDim; font.pixelSize: 10; font.family: "monospace" }
+        Text { anchors { right: parent.right; rightMargin: 4; top: parent.top; topMargin: 2 } text: cv.current; color: root.cText; font.pixelSize: 10; font.family: "monospace" }
+    }
     function toggle() { popupOpen = !popupOpen }
 
     readonly property bool bad: alerts.length > 0
@@ -94,6 +144,7 @@ Item {
                         root.pushHist(root.histF, j.thermal.freq_pct)
                         root.pushHist(root.histFan, j.thermal.fan_rpm)
                         if (root.popupOpen) root.thermal = j.thermal
+                        if (root.popupOpen && root.thermalOpen) root.repaintSparks()
                     }
                     root.notifyNew(j.alerts)
                 } catch (e) { console.log("zhor: bad line:", e) }
@@ -223,6 +274,42 @@ Item {
                         return s.join("  ")
                     }
                     color: root.cDim; font.pixelSize: 12; font.family: "monospace"
+                }
+                Column {
+                    id: thermalSec
+                    visible: root.thermal !== null && root.thermal.cpu_c !== null
+                    width: body.width
+                    spacing: 6
+                    readonly property var t: root.thermal ?? ({})
+                    Text {
+                        text: (root.thermalOpen ? "▾ " : "▸ ") + "thermal"
+                        color: root.cDim; font.pixelSize: 11; font.family: "monospace"
+                        MouseArea { anchors.fill: parent; onClicked: root.thermalOpen = !root.thermalOpen }
+                    }
+                    Row {
+                        visible: root.thermalOpen
+                        spacing: 6
+                        readonly property real cw: (body.width - 12) / 3
+                        Spark { id: sparkT; width: parent.cw; series: root.histT; lo: 30; hi: thermalSec.t.crit_c ?? 100; mark: root.warnC
+                                label: "cpu °C"; current: (thermalSec.t.cpu_c ?? null) !== null ? thermalSec.t.cpu_c + "°" : "" }
+                        Spark { id: sparkF; width: parent.cw; series: root.histF; lo: 0; hi: 100
+                                label: "freq %"; current: (thermalSec.t.freq_pct ?? null) !== null ? thermalSec.t.freq_pct + "%" : "" }
+                        Spark { id: sparkFan; width: parent.cw; series: root.histFan; lo: 0; hi: thermalSec.t.fan_max ?? 6500
+                                label: "fan rpm"; current: (thermalSec.t.fan_rpm ?? null) !== null ? thermalSec.t.fan_rpm + "" : "" }
+                    }
+                    Grid {
+                        visible: root.thermalOpen
+                        columns: 4; columnSpacing: 8; rowSpacing: 2   // 4 sensors per row: 31 sensors → 8 rows
+                        Repeater {
+                            model: thermalSec.t.extra ?? []
+                            // Each sensor is a name/°C pair.
+                            Row {
+                                spacing: 6
+                                Text { text: modelData.name; color: root.cDim; font.pixelSize: 11; font.family: "monospace"; width: 60; elide: Text.ElideRight }
+                                Text { text: modelData.c + "°"; color: root.degColor(modelData.c); font.pixelSize: 11; font.family: "monospace"; width: 36 }
+                            }
+                        }
+                    }
                 }
                 Repeater {
                     model: root.alerts

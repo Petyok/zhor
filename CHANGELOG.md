@@ -2,6 +2,21 @@
 
 All notable changes to zhor are documented in this file.
 
+## [0.3.0] - 2026-09-07
+
+### Added
+- Thermal: CPU package/core temperature, frequency, package throttle counters, fan rpm,
+  battery temperature and every extra hwmon/SMC sensor in the `thermal` block of each tick.
+- `throttle` alert: two consecutive ticks with counter movement, or within 10 °C of Tjmax.
+- Popup: thermal line and a collapsible section with one hour of temp/freq/fan sparklines
+  and the sensor table. Pill: package temperature with amber/red thresholds.
+- CLI: `THERMAL` line in the report; `--json` carries the block.
+
+### Changed
+- `make_alerts()` takes an optional `thermal=(block, state)`; existing calls are unchanged.
+- Notification titles depend on the alert kind (`System stalled`, `CPU throttling`,
+  `Process stuck`).
+
 ## [0.2.0] - 2026-09-07
 
 ### Added
