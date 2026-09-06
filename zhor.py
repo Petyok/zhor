@@ -262,7 +262,7 @@ def bump_hot(hot, procs, dt, cfg):
     return new
 
 
-def make_alerts(procs, hot, psi, cfg):
+def make_alerts(procs, hot, psi, cfg, thermal=None):
     alerts = []
     by_pid = {p["pid"]: p for p in procs}
     for pid, secs in hot.items():
@@ -277,6 +277,21 @@ def make_alerts(procs, hot, psi, cfg):
                        "pid": worst["pid"] if worst else 0,
                        "name": worst["name"] if worst else "?",
                        "why": f"memory stall {psi['memory']['full10']:.0f}%"})
+    if thermal is not None:
+        # `thermal` is (block, therm): the tick's values plus the cross-tick state.
+        # Two consecutive ticks with counter movement filter the 4 ms PROCHOT blips
+        # the kernel counts on every interrupt; d_ms says whether the heat was real
+        # (total_time_ms only accrues within 10 °C of Tjmax).
+        blk, st = thermal
+        near_crit = blk["cpu_c"] is not None and blk["crit_c"] is not None and blk["cpu_c"] >= blk["crit_c"] - 10
+        if st["streak"] >= 2:
+            ghz = f", {blk['freq_mhz'] / 1000:.1f} GHz" if blk["freq_mhz"] else ""
+            deg = f", {blk['cpu_c']}°C" if blk["cpu_c"] is not None else ""
+            alerts.append({"kind": "throttle", "pid": 0, "name": "cpu",
+                           "why": f"+{blk['d_pkg']} events, {blk['d_ms']} ms{deg}{ghz}"})
+        elif near_crit:
+            alerts.append({"kind": "throttle", "pid": 0, "name": "cpu",
+                           "why": f"{blk['cpu_c']}°C, crit {blk['crit_c']}°C"})
     return alerts
 
 
@@ -345,11 +360,13 @@ def read_events(since_s):
 
 
 # ── sampling ───────────────────────────────────────────────────────────────
-def sample(interval, top, cfg, prev=None, hot=None, dt=None):
+def sample(interval, top, cfg, prev=None, hot=None, dt=None, therm=None):
     """One measurement window. CPU needs two reads, so this always costs `interval`
     seconds unless the caller already holds a previous snapshot."""
     if prev is None:
         prev = read_procs()
+        if therm is not None:
+            read_thermal(therm)          # baseline, so the one-shot report can diff the counters
         time.sleep(interval)
         dt = interval
     cur = read_procs()
@@ -358,6 +375,7 @@ def sample(interval, top, cfg, prev=None, hot=None, dt=None):
     procs = diff_procs(prev, cur, dt, mem["MemTotal"])
     hot = bump_hot(hot or {}, procs, dt, cfg)
     listed = shortlist(procs, top)
+    thermal = read_thermal(therm) if therm is not None else None
     for p in listed:
         p["swap_mb"] = read_swap_kb(p["pid"]) // 1024
         p["hot_s"] = hot.get(p["pid"], 0.0)
@@ -371,8 +389,10 @@ def sample(interval, top, cfg, prev=None, hot=None, dt=None):
                 "swap_pct": round((swap_total - mem["SwapFree"]) / swap_total * 100)
                             if swap_total else 0},
         "procs": listed,
-        "alerts": make_alerts(listed, hot, psi, cfg),
+        "alerts": make_alerts(listed, hot, psi, cfg, thermal=(thermal, therm) if thermal else None),
     }
+    if thermal is not None:
+        snap["thermal"] = thermal
     return snap, cur, hot
 
 
@@ -417,6 +437,19 @@ def report(snap, cfg, events):
             f"{p['name']}({p['pid']}) {fmt_mb(p['rss_mb'])}"
             + (f"+{fmt_mb(p['swap_mb'])}sw" if p.get("swap_mb") else "") for p in by_mem),
     ]
+    th = snap.get("thermal")
+    if th and th.get("cpu_c") is not None:
+        parts = [f"THERMAL  {th['cpu_c']}°C"]
+        if th.get("freq_mhz"):
+            parts.append(f"{th['freq_mhz'] / 1000:.1f} GHz" + (f" ({th['freq_pct']}%)" if th.get("freq_pct") is not None else ""))
+        if th.get("fan_rpm") is not None:
+            parts.append(f"fan {th['fan_rpm']} rpm")
+        if th.get("throttle_pkg") is not None:
+            parts.append(f"throttle +{th['d_pkg']} events/window ({th['throttle_pkg']} total, "
+                         f"{th['throttle_ms'] / 1000:.1f} s since boot)")
+        if th.get("turbo") is False:
+            parts.append("turbo off")
+        out.insert(3, "  ".join(parts))
     flagged = [p for p in snap["procs"] if p.get("hot_s", 0) >= cfg["sustain"]]
     if flagged:
         out.append("FLAGGED  " + "  ".join(
@@ -467,7 +500,7 @@ def main():
         return 0
 
     if a.cmd == "report":
-        snap, _, _ = sample(a.interval or 1.0, a.top, cfg)
+        snap, _, _ = sample(a.interval or 1.0, a.top, cfg, therm=discover_thermal())
         if a.json:
             code, text = verdict(snap, cfg)
             print(json.dumps({**snap, "verdict": text,
@@ -481,11 +514,12 @@ def main():
     # costs one read, not two, and carries `hot` across ticks.
     interval = a.interval or 3.0
     prev, hot, seen, t_prev = read_procs(), {}, set(), time.monotonic()
+    therm = discover_thermal()
     while True:
         time.sleep(interval)
         now = time.monotonic()
         dt, t_prev = now - t_prev, now
-        snap, prev, hot = sample(interval, a.top, cfg, prev=prev, hot=hot, dt=dt)
+        snap, prev, hot = sample(interval, a.top, cfg, prev=prev, hot=hot, dt=dt, therm=therm)
         seen = log_events(snap["alerts"], seen)
         print(json.dumps(snap, separators=(",", ":")), flush=True)
 

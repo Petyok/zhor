@@ -138,6 +138,46 @@ def test_stall_alert_blames_footprint_not_cpu():
     assert len(a) == 1 and a[0]["kind"] == "stall" and a[0]["name"] == "Telegram"
 
 
+def test_throttle_alert_needs_two_consecutive_ticks_or_near_crit():
+    root = fake_sys()
+    therm = zhor.discover_thermal(root)
+    cnt = "devices/system/cpu/cpu0/thermal_throttle/package_throttle_count"
+    ms = "devices/system/cpu/cpu0/thermal_throttle/package_throttle_total_time_ms"
+    t0 = zhor.read_thermal(therm)                     # baseline
+    _w(root, cnt, 865); _w(root, ms, 3520)
+    t1 = zhor.read_thermal(therm)                     # first tick with movement
+    assert t1["d_pkg"] == 2 and t1["d_ms"] == 8 and t1["throttled"] and therm["streak"] == 1
+    assert zhor.make_alerts([], {}, CALM, CFG, thermal=(t1, therm)) == []   # one blip is not an alert
+    _w(root, cnt, 870)
+    t2 = zhor.read_thermal(therm)
+    assert therm["streak"] == 2
+    a = zhor.make_alerts([], {}, CALM, CFG, thermal=(t2, therm))
+    assert len(a) == 1 and a[0]["kind"] == "throttle" and a[0]["pid"] == 0 and a[0]["name"] == "cpu"
+    assert "+5 events" in a[0]["why"] and "65°C" in a[0]["why"]
+    t3 = zhor.read_thermal(therm)                     # counter still: streak resets
+    assert therm["streak"] == 0 and zhor.make_alerts([], {}, CALM, CFG, thermal=(t3, therm)) == []
+    # near Tjmax alerts even without counter movement
+    _w(root, "class/hwmon/hwmon1/temp1_input", 96000)
+    t4 = zhor.read_thermal(therm)
+    a = zhor.make_alerts([], {}, CALM, CFG, thermal=(t4, therm))
+    assert len(a) == 1 and "crit 105°C" in a[0]["why"]
+
+
+def test_make_alerts_without_thermal_is_unchanged():
+    assert zhor.make_alerts([], {}, CALM, CFG) == []
+
+
+def test_report_prints_thermal_line_when_present():
+    snap = _snap()
+    snap["thermal"] = {"cpu_c": 65, "cores_c": [65, 64], "crit_c": 105, "freq_mhz": 1800, "freq_pct": 100,
+                       "turbo": False, "throttle_pkg": 863, "throttle_ms": 3512, "d_pkg": 0, "d_ms": 0,
+                       "throttled": False, "fan_rpm": 1185, "fan_max": 6500, "bat_c": 35, "extra": []}
+    _, text = zhor.report(snap, CFG, [])
+    assert "THERMAL  65°C" in text and "1.8 GHz (100%)" in text and "fan 1185 rpm" in text and "863 total" in text
+    _, text = zhor.report(_snap(), CFG, [])           # old snapshots without the block still render
+    assert "THERMAL" not in text
+
+
 def test_shortlist_keeps_both_failure_modes():
     # A pure-CPU ranking would drop the fat process and vice versa.
     procs = ([{"pid": i, "cpu": 100.0 - i, "rss_mb": 1} for i in range(5)]
