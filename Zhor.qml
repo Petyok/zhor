@@ -28,6 +28,8 @@ Item {
     property color cFaint:  "#33ffffff"
     property color cWarn:   "#e8b34a"
     property color cBad:    "#e05561"
+    property color cPill:   cBg        // pill background; a host bar may pass its own
+    property int   pillRadius: 17
 
     // ── state, fed by zhor.py ───────────────────────────────
     property var  psi:    ({ cpu10: 0, mem_full10: 0, io_full10: 0 })
@@ -95,8 +97,8 @@ Item {
         id: pillRect
         anchors.fill: parent
         implicitWidth: pillRow.implicitWidth + 24
-        radius: 17
-        color: root.cBg
+        radius: root.pillRadius
+        color: root.cPill
         border.width: 1
         border.color: root.bad ? root.cBad : root.cFaint
         Row {
