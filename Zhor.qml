@@ -30,6 +30,10 @@ Item {
     property color cBad:    "#e05561"
     property color cPill:   cBg        // pill background; a host bar may pass its own
     property int   pillRadius: 17
+    property real warnC: 80            // pill degree turns amber here…
+    property real badC:  95            // …and red here (crit − 10 on this laptop)
+    property int  historyLen: 1200     // one hour at the 3 s tick
+    property bool thermalOpen: false   // the sensor table is long; closed by default
 
     // ── state, fed by zhor.py ───────────────────────────────
     property var  psi:    ({ cpu10: 0, mem_full10: 0, io_full10: 0 })
@@ -39,6 +43,18 @@ Item {
     property bool alive:  false
     property bool popupOpen: false
     property string sortKey: "cpu"
+    // Thermal block of the tick. `thermal` (the full block, drives the popup) is
+    // only updated while the popup is open: the sensor Repeater re-creates ~60
+    // delegates on every model change. `pillC` is updated always.
+    property var  thermal: null
+    property real pillC: NaN
+    property var  lastTick: null
+    property var  histT: []            // °C per tick, null = unknown (breaks the line)
+    property var  histF: []            // freq % per tick
+    property var  histFan: []          // rpm per tick
+    function degColor(c) { return c >= badC ? cBad : c >= warnC ? cWarn : cText }
+    function pushHist(arr, v) { arr.push(v === undefined ? null : v); if (arr.length > historyLen) arr.shift() }
+    onPopupOpenChanged: if (popupOpen && lastTick && lastTick.thermal) thermal = lastTick.thermal
     function toggle() { popupOpen = !popupOpen }
 
     readonly property bool bad: alerts.length > 0
@@ -46,6 +62,10 @@ Item {
         : bad || psi.cpu10 >= redPsi ? cBad
         : psi.cpu10 >= amberPsi ? cWarn : cAccent
     function fmtMb(mb) { return mb >= 1024 ? (mb / 1024).toFixed(1) + "G" : mb + "M" }
+    function alertTitle(kind) {
+        return kind === "stall" ? "System stalled" : kind === "throttle" ? "CPU throttling" : "Process stuck"
+    }
+    function alertBody(a) { return (a.pid ? a.name + " (" + a.pid + ")" : a.name) + " — " + a.why }
     readonly property var sorted: {
         var a = procs.slice()
         a.sort(root.sortKey === "cpu" ? (x, y) => y.cpu - x.cpu : (x, y) => y.rss_mb - x.rss_mb)
@@ -64,9 +84,17 @@ Item {
             onRead: data => {
                 try {
                     var j = JSON.parse(data)
+                    root.lastTick = j
                     root.psi = j.psi; root.mem = j.mem
                     root.procs = j.procs; root.alerts = j.alerts
                     root.alive = true
+                    if (j.thermal) {
+                        root.pillC = j.thermal.cpu_c === null ? NaN : j.thermal.cpu_c
+                        root.pushHist(root.histT, j.thermal.cpu_c)
+                        root.pushHist(root.histF, j.thermal.freq_pct)
+                        root.pushHist(root.histFan, j.thermal.fan_rpm)
+                        if (root.popupOpen) root.thermal = j.thermal
+                    }
                     root.notifyNew(j.alerts)
                 } catch (e) { console.log("zhor: bad line:", e) }
             }
@@ -84,8 +112,7 @@ Item {
             live[key] = true
             if (!notified[key]) {
                 Quickshell.execDetached(["notify-send", "-a", "zhor", "-u", "critical",
-                    a.kind === "stall" ? "System stalled" : "Process stuck",
-                    a.name + " (" + a.pid + ") — " + a.why])
+                    root.alertTitle(a.kind), root.alertBody(a)])
             }
         }
         notified = live
@@ -121,6 +148,14 @@ Item {
                     ? Math.round(root.psi.cpu10) + "%  " + root.fmtMb(root.mem.avail_mb) + "  z" + root.mem.swap_pct + "%"
                     : "zhor ?"
                 color: root.cText
+                font.pixelSize: 13
+                font.family: "monospace"
+            }
+            Text {
+                visible: root.alive && !isNaN(root.pillC)
+                anchors.verticalCenter: parent.verticalCenter
+                text: Math.round(root.pillC) + "°"
+                color: root.degColor(root.pillC)
                 font.pixelSize: 13
                 font.family: "monospace"
             }
@@ -175,11 +210,25 @@ Item {
                         font.pixelSize: 12; font.family: "monospace"
                     }
                 }
+                Text {
+                    visible: root.thermal !== null && root.thermal.cpu_c !== null
+                    readonly property var t: root.thermal ?? ({})
+                    text: {
+                        var s = []
+                        if (t.cpu_c !== null && t.cpu_c !== undefined) s.push("cpu " + t.cpu_c + "°")
+                        if (t.freq_mhz) s.push((t.freq_mhz / 1000).toFixed(1) + " GHz" + (t.freq_pct !== null && t.freq_pct !== undefined ? " (" + t.freq_pct + "%)" : ""))
+                        if (t.fan_rpm !== null && t.fan_rpm !== undefined) s.push("fan " + t.fan_rpm)
+                        if (t.bat_c !== null && t.bat_c !== undefined) s.push("bat " + t.bat_c + "°")
+                        if (t.turbo === false) s.push("turbo off")
+                        return s.join("  ")
+                    }
+                    color: root.cDim; font.pixelSize: 12; font.family: "monospace"
+                }
                 Repeater {
                     model: root.alerts
                     Text {
                         width: body.width
-                        text: "⚠ " + modelData.name + " (" + modelData.pid + ") — " + modelData.why
+                        text: "⚠ " + root.alertBody(modelData)
                         color: root.cBad; font.pixelSize: 12; font.bold: true; elide: Text.ElideRight
                     }
                 }
