@@ -76,10 +76,11 @@ Item {
         function repaint() { if (available) requestPaint() }
         onPaint: {
             var ctx = getContext("2d"), w = width, h = height, n = series.length
+            var top = 14                     // label band; the plot lives below it
             ctx.clearRect(0, 0, w, h)
             ctx.fillStyle = root.cFaint; ctx.fillRect(0, h - 1, w, 1)
             if (!isNaN(mark) && hi > lo) {
-                var ym = h - (mark - lo) / (hi - lo) * h
+                var ym = h - (mark - lo) / (hi - lo) * (h - top)
                 ctx.strokeStyle = root.cWarn; ctx.lineWidth = 1; ctx.setLineDash([3, 3])
                 ctx.beginPath(); ctx.moveTo(0, ym); ctx.lineTo(w, ym); ctx.stroke(); ctx.setLineDash([])
             }
@@ -96,7 +97,7 @@ Item {
                     if (pen) { ctx.stroke(); ctx.lineTo(lastX, h); ctx.lineTo(startX, h); ctx.closePath(); ctx.fill(); pen = false }
                     continue
                 }
-                var x = x0 + i * step, y = h - Math.min(1, Math.max(0, (v - lo) / (hi - lo))) * (h - 4) - 2
+                var x = x0 + i * step, y = h - Math.min(1, Math.max(0, (v - lo) / (hi - lo))) * (h - top - 2) - 2
                 if (!pen) { ctx.beginPath(); ctx.moveTo(x, y); pen = true; startX = x } else ctx.lineTo(x, y)
                 lastX = x
             }
