@@ -76,7 +76,9 @@ has been over the line. Clicking the `CPU%` / `RSS` headers sorts.
 Buttons are greyed out for processes you don't own: without root `kill` returns
 EPERM, and a button that silently does nothing is worse than a disabled one.
 
-**Alerts** go to `notify-send`, once per process while the condition holds:
+**Alerts** go to `notify-send`, once per process per episode: an alert that comes back
+within `quietMin` (30 min) of its last sighting stays silent, so a condition that flaps
+around its threshold (throttling, temperature) does not re-notify every few seconds.
 
 * `sustained` — a process over the line for a minute (≥90% of a core or ≥25% RAM);
 * `stall` — the machine is genuinely blocked on memory (`memory full avg10` ≥ 10%).

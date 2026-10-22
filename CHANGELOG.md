@@ -2,6 +2,13 @@
 
 All notable changes to zhor are documented in this file.
 
+## [Unreleased]
+
+### Changed
+- Notifications are sent once per episode: an alert that returns within `quietMin`
+  (default 30 min) of its last sighting stays silent. Throttling and near-crit temperature
+  flapped around their thresholds and re-notified every few seconds.
+
 ## [0.3.0] - 2026-09-07
 
 ### Added

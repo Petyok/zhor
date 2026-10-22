@@ -34,6 +34,7 @@ Item {
     property real badC:  95            // …and red here (crit − 10 on this laptop)
     property int  historyLen: 1200     // one hour at the 3 s tick
     property bool thermalOpen: false   // the sensor table is long; closed by default
+    property real quietMin: 30         // an alert re-notifies only after this long without it
 
     // ── state, fed by zhor.py ───────────────────────────────
     property var  psi:    ({ cpu10: 0, mem_full10: 0, io_full10: 0 })
@@ -156,18 +157,21 @@ Item {
     }
     Timer { id: respawn; interval: 3000; onTriggered: collector.running = true }
 
-    property var notified: ({})
+    // One notification per episode, not per flap: throttling and temperature hover
+    // around their thresholds and would re-raise every few ticks. A key stays quiet
+    // until it has been absent for quietMin; every live tick pushes that further.
+    property var lastLive: ({})        // "kind:pid" -> ms of the last tick it was live
     function notifyNew(list) {
-        var live = {}
+        var now = Date.now(), quiet = root.quietMin * 60000, next = {}
+        for (var k in lastLive) if (now - lastLive[k] < quiet) next[k] = lastLive[k]
         for (var i = 0; i < list.length; i++) {
             var a = list[i], key = a.kind + ":" + a.pid
-            live[key] = true
-            if (!notified[key]) {
+            if (!(key in next))
                 Quickshell.execDetached(["notify-send", "-a", "zhor", "-u", "critical",
                     root.alertTitle(a.kind), root.alertBody(a)])
-            }
+            next[key] = now
         }
-        notified = live
+        lastLive = next
     }
     function act(argv) { Quickshell.execDetached(argv) }
 
